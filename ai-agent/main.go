@@ -646,11 +646,33 @@ Code:
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Second} // Longer timeout for LLM
-	resp, err := client.Do(req)
-	if err != nil {
-		return AnalysisResult{}, err
+	maxRetries := 3
+	var resp *http.Response
+	var requestErr error
+	
+	for i := 0; i <= maxRetries; i++ {
+		client := &http.Client{Timeout: 60 * time.Second} // Longer timeout for LLM
+		resp, requestErr = client.Do(req)
+		if requestErr == nil {
+			break // Success, exit retry loop
+		}
+		
+		// If we've exhausted retries, return the error
+		if i == maxRetries {
+			return AnalysisResult{}, fmt.Errorf("failed after %d retries: %v", maxRetries, requestErr)
+		}
+		
+		// Wait before retrying with exponential backoff
+		waitTime := time.Duration(1<<i) * time.Second // 1s, 2s, 4s
+		log.Printf("WARNING: NVIDIA API request failed (attempt %d/%d): %v. Retrying in %v...", i+1, maxRetries+1, requestErr, waitTime)
+		time.Sleep(waitTime)
 	}
+	
+	// If we exited the loop due to max retries, requestErr will be set
+	if requestErr != nil {
+		return AnalysisResult{}, requestErr
+	}
+	
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
