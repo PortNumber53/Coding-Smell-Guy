@@ -696,12 +696,25 @@ Code:
 
 	// Parse the contentStr as JSON (expected to be AnalysisResult)
 	var analysis AnalysisResult
-	if err := json.Unmarshal([]byte(contentStr), &analysis); err != nil {
+	
+	// Clean up the response - remove markdown code block markers if present
+	cleanedContent := strings.TrimSpace(contentStr)
+	if strings.HasPrefix(cleanedContent, "```json") && strings.HasSuffix(cleanedContent, "```") {
+		cleanedContent = strings.TrimPrefix(cleanedContent, "```json")
+		cleanedContent = strings.TrimSuffix(cleanedContent, "```")
+		cleanedContent = strings.TrimSpace(cleanedContent)
+	} else if strings.HasPrefix(cleanedContent, "```") && strings.HasSuffix(cleanedContent, "```") {
+		cleanedContent = strings.TrimPrefix(cleanedContent, "```")
+		cleanedContent = strings.TrimSuffix(cleanedContent, "```")
+		cleanedContent = strings.TrimSpace(cleanedContent)
+	}
+	
+	if err := json.Unmarshal([]byte(cleanedContent), &analysis); err != nil {
 		// If the LLM didn't return JSON, we might want to wrap it.
-		log.Printf("WARNING: LLM did not return valid JSON: %v. Error: %v", contentStr, err)
+		log.Printf("WARNING: LLM did not return valid JSON: %v. Error: %v", cleanedContent, err)
 		analysis.Issues = []Issue{{
 			Type:       "note",
-			Description: contentStr,
+			Description: cleanedContent,
 		}}
 	}
 
