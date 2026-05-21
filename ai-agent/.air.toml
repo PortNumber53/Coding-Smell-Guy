@@ -1,0 +1,15 @@
+[build]
+  bin = "./tmp/coding-smell-agent"
+  cmd = "go build -o ./tmp/coding-smell-agent ./..."
+  include_ext = ["go", "mod", "sum"]
+  exclude_dir = ["assets", "tmp", "vendor", "frontend", "node_modules", "config"]
+  include_file = ["/Users/grimlock/.config/coding-smell-guy/config.ini"]
+  log = "build.log"
+  pre_cmd = ["kill $(lsof -ti:21321) 2>/dev/null || true"]
+[color]
+  main = "magenta"
+  runner = "green"
+  build = "yellow"
+  watcher = "cyan"
+[misc]
+  clean_on_exit = true

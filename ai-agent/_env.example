@@ -1,0 +1,28 @@
+# Configuration for Coding Smell Agent
+# Copy this file to .env and fill in the values
+
+# Port to listen on for webhooks
+PORT=8080
+
+# GitHub Personal Access Token (for PR commenting and API access)
+GITHUB_TOKEN=
+
+# GitLab Personal Access Token (for MR commenting and API access)
+GITLAB_TOKEN=
+
+# NVIDIA API Key (required for LLM access)
+NVIDIA_API_KEY=
+
+# Webhook secret for securing webhook endpoints (optional but recommended)
+WEBHOOK_SECRET=
+
+# Autofix flags (set to true to enable automatic fixes for each category)
+AUTOFIX_SMELLS=false
+AUTOFIX_COMPLEX=false
+AUTOFIX_VULN=false
+
+# Periodic analysis interval in minutes (0 to disable)
+PERIODIC_INTERVAL_MINUTES=0
+
+# Path to SQLite database file
+DB_PATH=./coding_smell_agent.db

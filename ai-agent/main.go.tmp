@@ -1,0 +1,545 @@
+package main
+
+import (
+	"bytes"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+// Config holds the application configuration.
+type Config struct {
+	Port           string
+	GitHubToken    string
+	GitLabToken    string
+	NVIDIAAPIKey   string
+	AutofixSmells  bool
+	AutofixComplex bool
+	AutofixVuln    bool
+	PeriodicInterval time.Duration
+	DBPath         string
+}
+
+// WebhookPayload represents the payload from GitHub/GitLab webhook.
+type WebhookPayload struct {
+	Action string `json:"action"`
+	PullRequest struct {
+		ID        int    `json:"id"`
+		Number    int    `json:"number"`
+		Title     string `json:"title"`
+		Head struct {
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"base"`
+	} `json:"pull_request"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+}
+
+// AnalysisResult represents the result from the LLM analysis.
+type AnalysisResult struct {
+	Issues []Issue `json:"issues"`
+}
+
+// Issue represents a single issue found.
+type Issue struct {
+	Type       string `json:"type"` // e.g., "code_smell", "complexity", "vulnerability"
+	Description string `json:"description"`
+	File       string `json:"file"`
+	Line       int    `json:"line"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+var (
+	config Config
+	db     *sql.DB
+)
+
+func main() {
+	loadConfig()
+	initDB()
+	defer db.Close()
+
+	r := gin.Default()
+
+	// Webhook endpoint
+	r.POST("/webhook", webhookHandler)
+
+	// Health check
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	// Start periodic analysis if enabled
+	if config.PeriodicInterval > 0 {
+		go startPeriodicAnalysis()
+	}
+
+	// Run server
+	addr := fmt.Sprintf(":%s", config.Port)
+	log.Printf("Starting server on %s", addr)
+	if err := r.Run(addr); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+func loadConfig() {
+	config = Config{
+		Port:           getEnv("PORT", "8080"),
+		GitHubToken:    getEnv("GITHUB_TOKEN", ""),
+		GitLabToken:    getEnv("GITLAB_TOKEN", ""),
+		NVIDIAAPIKey:   getEnv("NVIDIA_API_KEY", ""),
+		AutofixSmells:  getEnvAsBool("AUTOFIX_SMELLS", false),
+		AutofixComplex: getEnvAsBool("AUTOFIX_COMPLEX", false),
+		AutofixVuln:    getEnvAsBool("AUTOFIX_VULN", false),
+		PeriodicInterval: time.Duration(getEnvAsInt("PERIODIC_INTERVAL_MINUTES", 0)) * time.Minute,
+		DBPath:         getEnv("DB_PATH", "./coding_smell_agent.db"),
+	}
+
+	// Validate required config
+	if config.NVIDIAAPIKey == "" {
+		log.Fatal("NVIDIA_API_KEY is required")
+	}
+	if config.GitHubToken == "" && config.GitLabToken == "" {
+		log.Printf("WARN: At least one of GITHUB_TOKEN or GITLAB_TOKEN should be set for PR commenting")
+	}
+}
+
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
+}
+
+func getEnvAsBool(key string, fallback bool) bool {
+	if value, exists := os.LookupEnv(key); exists {
+		return value == "true" || value == "1" || value == "t" || value == "T"
+	}
+	return fallback
+}
+
+func getEnvAsInt(key string, fallback int) int {
+	if value, exists := os.LookupEnv(key); exists {
+		var v int
+		fmt.Sscanf(value, "%d", &v)
+		return v
+	}
+	return fallback
+}
+
+func initDB() {
+	var err error
+	db, err = sql.Open("sqlite3", config.DBPath)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+
+	// Create table for tracking verified files
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS verified_files (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		repo_full_name TEXT NOT NULL,
+		file_path TEXT NOT NULL,
+		commit_sha TEXT NOT NULL,
+		last_verified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(repo_full_name, file_path, commit_sha)
+	);
+	`
+	if _, err := db.Exec(createTableSQL); err != nil {
+		log.Fatalf("Failed to create table: %v", err)
+	}
+}
+
+func webhookHandler(c *gin.Context) {
+	var payload WebhookPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload"})
+		return
+	}
+
+	// We only care about PR opened events
+	if payload.Action != "opened" {
+		c.JSON(http.StatusOK, gin.H{"message": "Ignoring non-opened event"})
+		return
+	}
+
+	// Determine which platform (GitHub or GitLab) based on tokens or payload structure.
+	// For simplicity, we assume GitHub if GitHubToken is set, else GitLab.
+	// In a real implementation, you might check the User-Agent or other headers.
+	platform := "github"
+	if config.GitHubToken == "" && config.GitLabToken != "" {
+		platform = "gitlab"
+	}
+
+	// Analyze the PR
+	go analyzePR(payload, platform)
+
+	c.JSON(http.StatusOK, gin.H{"message": "PR analysis started"})
+}
+
+func analyzePR(payload WebhookPayload, platform string) {
+	var err error
+	switch platform {
+	case "github":
+		err = analyzePRGitHub(payload)
+	case "gitlab":
+		err = analyzePRGitLab(payload)
+	default:
+		err = fmt.Errorf("unsupported platform: %s", platform)
+	}
+	if err != nil {
+		log.Printf("Error analyzing PR: %v", err)
+	}
+}
+
+// analyzePRGitHub analyzes a GitHub pull request.
+func analyzePRGitHub(payload WebhookPayload) error {
+	owner := payload.Repository.FullName // format: owner/repo
+	repo := strings.SplitN(owner, "/", 2)
+	if len(repo) != 2 {
+		return fmt.Errorf("invalid repository full name: %s", owner)
+	}
+	ownerName := repo[0]
+	repoName := repo[1]
+	prNumber := payload.PullRequest.Number
+	headSHA := payload.PullRequest.Head.SHA
+
+	// Get list of files in the PR
+	files, err := getPRFilesGitHub(ownerName, repoName, prNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR files: %v", err)
+	}
+
+	for _, file := range files {
+		// Skip if file is deleted
+		if file.Status == "removed" {
+			continue
+		}
+
+		// Check if we have already verified this file at this commit
+		verified, err := isFileVerified(owner+"/"+repoName, file.Filename, headSHA)
+		if err != nil {
+			log.Printf("Error checking verification status for %s: %v", file.Filename, err)
+			continue
+		}
+		if verified {
+			log.Printf("File %s already verified at commit %s, skipping", file.Filename, headSHA)
+			continue
+		}
+
+		// Get file content
+		content, err := getFileContentGitHub(ownerName, repoName, file.Filename, headSHA)
+		if err != nil {
+			log.Printf("Error getting content for %s: %v", file.Filename, err)
+			continue
+		}
+
+		// Analyze with LLM
+		analysis, err := analyzeFileWithLLM(content)
+		if err != nil {
+			log.Printf("Error analyzing file %s: %v", file.Filename, err)
+			continue
+		}
+
+		// Filter issues by type if needed (we could also filter based on autofix flags, but we'll report all)
+		var issuesToReport []Issue
+		for _, issue := range analysis.Issues {
+			// We can skip certain types if autofix is disabled? No, we still want to report.
+			issuesToReport = append(issuesToReport, issue)
+		}
+
+		if len(issuesToReport) > 0 {
+			// Post a comment on the PR with the issues
+			err := postPRCommentGitHub(ownerName, repoName, prNumber, file.Filename, issuesToReport)
+			if err != nil {
+				log.Printf("Error posting comment for %s: %v", file.Filename, err)
+			}
+
+			// If autofix is enabled for any issue type, attempt to create a fix commit
+			if config.AutofixSmells || config.AutofixComplex || config.AutofixVuln {
+				go attemptAutofixGitHub(ownerName, repoName, file.Filename, content, issuesToReport, headSHA)
+			}
+		}
+
+		// Mark file as verified
+		err = markFileVerified(owner+"/"+repoName, file.Filename, headSHA)
+		if err != nil {
+			log.Printf("Error marking file %s as verified: %v", file.Filename, err)
+		}
+	}
+
+	return nil
+}
+
+// analyzePRGitLab analyzes a GitLab merge request (placeholder).
+func analyzePRGitLab(payload WebhookPayload) error {
+	// TODO: Implement GitLab MR analysis similar to GitHub
+	log.Printf("GitLab support not yet implemented")
+	return nil
+}
+
+// getPRFilesGitHub fetches the list of files in a GitHub PR.
+func getPRFilesGitHub(owner, repo string, prNumber int) ([]GitHubFile, error) {
+	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/files", owner, repo, prNumber)
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if config.GitHubToken != "" {
+		req.Header.Set("Authorization", "token "+config.GitHubToken)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+
+	var files []GitHubFile
+	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// GitHubFile represents a file in a GitHub PR.
+type GitHubFile struct {
+	Filename string `json:"filename"`
+	Status   string `json:"status"` // added, removed, modified, renamed
+	// Add other fields if needed
+}
+
+// getFileContentGitHub fetches the content of a file at a specific commit SHA.
+func getFileContentGitHub(owner, repo, filename, commitSHA string) (string, error) {
+	// Use the contents API to get the file content at the given commit
+	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", owner, repo, url.PathEscape(filename), commitSHA)
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	if config.GitHubToken != "" {
+		req.Header.Set("Authorization", "token "+config.GitHubToken)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API returned status %d for file %s", resp.StatusCode, filename)
+	}
+
+	var respBody struct {
+		Content string `json:"content"`
+		Encoding string `json:"encoding"` // usually "base64"
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		return "", err
+	}
+
+	if respBody.Encoding == "base64" {
+		decoded, err := base64Decode(respBody.Content)
+		if err != nil {
+			return "", err
+		}
+		return string(decoded), nil
+	}
+	return respBody.Content, nil
+}
+
+// base64Decode decodes a base64 string.
+func base64Decode(s string) ([]byte, error) {
+	return io.ReadAll(base64.NewDecoder(base64.StdEncoding, strings.NewReader(s)))
+}
+
+// postPRCommentGitHub posts a comment on a PR with the list of issues.
+func postPRCommentGitHub(owner, repo string, prNumber int, filename string, issues []Issue) error {
+	// Create a comment body
+	var buf strings.Builder
+	buf.WriteString(fmt.Sprintf("### Code Analysis for `%s`\n\n", filename))
+	buf.WriteString("Found the following issues:\n\n")
+	for _, issue := range issues {
+		buf.WriteString(fmt.Sprintf("- **%s** (line %d): %s\n", issue.Type, issue.Line, issue.Description))
+		if issue.Suggestion != "" {
+			buf.WriteString(fmt.Sprintf("  - Suggestion: %s\n", issue.Suggestion))
+		}
+	}
+	buf.WriteString("\n---\n*Analysis performed by Coding Smell Agent*")
+
+	comment := map[string]string{
+		"body": buf.String(),
+	}
+	payloadBytes, err := json.Marshal(comment)
+	if err != nil {
+		return err
+	}
+
+	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
+	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return err
+	}
+	if config.GitHubToken != "" {
+		req.Header.Set("Authorization", "token "+config.GitHubToken)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// attemptAutofixGitHub attempts to create a commit with fixes for the given issues.
+// This is a placeholder; actual implementation would involve generating code changes.
+func attemptAutofixGitHub(owner, repo, filename, originalContent string, issues []Issue, baseSHA string) {
+	log.Printf("Attempting autofix for %s (not yet implemented)", filename)
+	// TODO:
+	// 1. For each issue, generate a fix (maybe by asking the LLM to provide a fix).
+	// 2. Apply the fixes to the content.
+	// 3. Create a new commit on a branch and open a PR or push directly (depending on permissions).
+	// For now, we just log.
+}
+
+// isFileVerified checks if a file has been verified at the given commit.
+func isFileVerified(repoFullName, filePath, commitSHA string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM verified_files WHERE repo_full_name = ? AND file_path = ? AND commit_sha = ?)", repoFullName, filePath, commitSHA).Scan(&exists)
+	return exists, err
+}
+
+// markFileVerified records that a file has been verified at the given commit.
+func markFileVerified(repoFullName, filePath, commitSHA string) error {
+	_, err := db.Exec("INSERT OR IGNORE INTO verified_files (repo_full_name, file_path, commit_sha) VALUES (?, ?, ?)", repoFullName, filePath, commitSHA)
+	return err
+}
+
+// startPeriodicAnalysis runs periodic analysis of the codebase (placeholder).
+func startPeriodicAnalysis() {
+	ticker := time.NewTicker(config.PeriodicInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		log.Println("Starting periodic analysis")
+		// TODO: Implement periodic analysis of repositories (maybe from a config list)
+	}
+}
+
+// analyzeFileWithLLM sends the file content to the NVIDIA API and returns analysis.
+func analyzeFileWithLLM(content string) (AnalysisResult, error) {
+	// We'll ask the LLM to analyze the code for code smells, complexity, and vulnerabilities.
+	// We'll structure the prompt to get a JSON response.
+	prompt := fmt.Sprintf(`You are an expert code reviewer. Analyze the following code for:
+1. Code smells (e.g., duplicated code, long methods, large classes, etc.)
+2. Complexity (e.g., cyclomatic complexity, nested conditionals, etc.)
+3. Security vulnerabilities (e.g., SQL injection, buffer overflows, etc.)
+
+For each issue found, provide:
+- Type: one of "code_smell", "complexity", "vulnerability"
+- Description: a clear description of the issue
+- File: the file name (we will fill this in later, but you can leave it as empty or guess from context)
+- Line: the line number where the issue occurs (approximate if needed)
+- Suggestion: a suggestion on how to fix the issue (optional)
+
+Return a JSON object with an "issues" array containing the issues found.
+If no issues are found, return an empty array.
+
+Code:
+%s`, content)
+
+	invokeURL := "https://integrate.api.nvidia.com/v1/chat/completions"
+	payload := map[string]interface{}{
+		"model": "moonshotai/kimi-k2.6",
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"max_tokens": 16384,
+		"temperature": 1.00,
+		"top_p": 1.00,
+		"stream": false,
+		"chat_template_kwargs": map[string]bool{"thinking": true},
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return AnalysisResult{}, err
+	}
+
+	req, err := http.NewRequest("POST", invokeURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return AnalysisResult{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+config.NVIDIAAPIKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 60 * time.Second} // Longer timeout for LLM
+	resp, err := client.Do(req)
+	if err != nil {
+		return AnalysisResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return AnalysisResult{}, fmt.Errorf("NVIDIA API returned status %d", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return AnalysisResult{}, err
+	}
+
+	// Extract the content from the response
+	contentStr, ok := result["choices"].([]interface{})[0].(map[string]interface{})["message"].(map[string]interface{})["content"].(string)
+	if !ok {
+		return AnalysisResult{}, fmt.Errorf("unexpected response format")
+	}
+
+	// Parse the contentStr as JSON (expected to be AnalysisResult)
+	var analysis AnalysisResult
+	if err := json.Unmarshal([]byte(contentStr), &analysis); err != nil {
+		// If the LLM didn't return JSON, we might want to wrap it.
+		analysis.Issues = []Issue{{
+			Type:       "note",
+			Description: contentStr,
+		}}
+	}
+
+	return analysis, nil
+}

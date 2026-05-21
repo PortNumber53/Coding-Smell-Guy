@@ -1,0 +1,16 @@
+2026/05/20 23:50:40 Loaded .env file
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] POST   /webhook                  --> main.webhookHandler (3 handlers)
+[GIN-debug] GET    /health                   --> main.main.func1 (3 handlers)
+2026/05/20 23:50:40 Starting server on :9093
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://github.com/gin-gonic/gin/blob/master/docs/doc.md#dont-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on :9093
+[GIN] 2026/05/20 - 23:50:54 | 401 | 85.292µs |             ::1 | POST     "/webhook"
+[GIN] 2026/05/20 - 23:51:03 | 200 | 491.792µs |             ::1 | POST     "/webhook"
+2026/05/20 23:51:04 Error analyzing PR: failed to get PR files: GitHub API returned status 401

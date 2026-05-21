@@ -1,0 +1,61 @@
+[warning] build.bin is deprecated; set build.entrypoint instead
+
+  __    _   ___  
+ / /\  | | | |_) 
+/_/--\ |_| |_| \_ v1.64.4, built with Go go1.25.6
+
+mkdir /Users/grimlock/AI/Coding-Smell-Guy/ai-agent/tmp
+watching .
+!exclude tmp
+> kill $(lsof -ti:21321) 2>/dev/null || true
+building...
+running...
+2026/05/21 09:11:56 Using config file: /Users/grimlock/.config/coding-smell-guy/config.ini
+[GIN-debug] [WARNING] Creating an Engine instance with the Logger and Recovery middleware already attached.
+
+[GIN-debug] [WARNING] Running in "debug" mode. Switch to "release" mode in production.
+ - using env:	export GIN_MODE=release
+ - using code:	gin.SetMode(gin.ReleaseMode)
+
+[GIN-debug] POST   /webhook                  --> main.webhookHandler (3 handlers)
+[GIN-debug] GET    /health                   --> main.main.func1 (3 handlers)
+2026/05/21 09:11:56 Starting server on :21321
+[GIN-debug] [WARNING] You trusted all proxies, this is NOT safe. We recommend you to set a value.
+Please check https://github.com/gin-gonic/gin/blob/master/docs/doc.md#dont-trust-all-proxies for details.
+[GIN-debug] Listening and serving HTTP on :21321
+[GIN] 2026/05/21 - 09:12:33 | 200 | 99.666µs |             ::1 | GET      "/health"
+2026/05/21 09:13:28 DEBUG: Received webhook payload length: 120
+2026/05/21 09:13:28 DEBUG: Payload first 20 bytes hex: 7b22616374696f6e223a20226f70656e6564222c
+2026/05/21 09:13:28 DEBUG: Payload last 20 bytes hex: 6e616d65223a2022746573742f7265706f227d7d
+2026/05/21 09:13:28 DEBUG: Webhook secret length: 63
+2026/05/21 09:13:28 DEBUG: Webhook secret (first 10 chars): yrvIWzfwdZ
+2026/05/21 09:13:28 DEBUG: Webhook secret (full): "yrvIWzfwdZnVwgbaeSbzXdMI7EOH3O03bx8j5x8m6uSHkA274mQcKDqXSGPTvod"
+2026/05/21 09:13:28 DEBUG: Webhook secret length: 63
+2026/05/21 09:13:28 DEBUG: Webhook secret bytes: 79727649577a6677645a6e56776762616553627a58644d4937454f48334f30336278386a3578386d367553486b413237346d51634b44715853475054766f64
+2026/05/21 09:13:28 DEBUG: Signature header: sha256=4899d0ea079270fe38282e82a0c3d0cf66146dc07388549d2fbdb267bb9f59ee
+2026/05/21 09:13:28 DEBUG: Webhook SHA256 signature validation. Provided: 4899d0ea079270fe38282e82a0c3d0cf66146dc07388549d2fbdb267bb9f59ee, Expected: 4899d0ea079270fe38282e82a0c3d0cf66146dc07388549d2fbdb267bb9f59ee
+2026/05/21 09:13:28 DEBUG: Payload length: 120
+2026/05/21 09:13:28 DEBUG: Payload: {"action": "opened", "pull_request": {"number": 1, "head": {"sha": "abc123"}}, "repository": {"full_name": "test/repo"}}
+2026/05/21 09:13:28 DEBUG: HMAC validation result: true
+2026/05/21 09:13:28 INFO: Starting PR analysis for platform github
+[GIN] 2026/05/21 - 09:13:28 | 200 |   2.56ms |             ::1 | POST     "/webhook"
+2026/05/21 09:13:28 ERROR: Error analyzing PR: failed to get PR files: GitHub API returned status 404
+2026/05/21 09:13:36 DEBUG: Received webhook payload length: 120
+2026/05/21 09:13:36 DEBUG: Payload first 20 bytes hex: 7b22616374696f6e223a20226f70656e6564222c
+2026/05/21 09:13:36 DEBUG: Payload last 20 bytes hex: 6e616d65223a2022746573742f7265706f227d7d
+2026/05/21 09:13:36 DEBUG: Webhook secret length: 63
+2026/05/21 09:13:36 DEBUG: Webhook secret (first 10 chars): yrvIWzfwdZ
+2026/05/21 09:13:36 DEBUG: Webhook secret (full): "yrvIWzfwdZnVwgbaeSbzXdMI7EOH3O03bx8j5x8m6uSHkA274mQcKDqXSGPTvod"
+2026/05/21 09:13:36 DEBUG: Webhook secret length: 63
+2026/05/21 09:13:36 DEBUG: Webhook secret bytes: 79727649577a6677645a6e56776762616553627a58644d4937454f48334f30336278386a3578386d367553486b413237346d51634b44715853475054766f64
+2026/05/21 09:13:36 DEBUG: Signature header: sha256=invalid
+2026/05/21 09:13:36 DEBUG: Webhook SHA256 signature validation. Provided: invalid, Expected: 4899d0ea079270fe38282e82a0c3d0cf66146dc07388549d2fbdb267bb9f59ee
+2026/05/21 09:13:36 DEBUG: Payload length: 120
+2026/05/21 09:13:36 DEBUG: Payload: {"action": "opened", "pull_request": {"number": 1, "head": {"sha": "abc123"}}, "repository": {"full_name": "test/repo"}}
+2026/05/21 09:13:36 DEBUG: HMAC validation result: false
+2026/05/21 09:13:36 DEBUG: Computed MAC: 4899d0ea079270fe38282e82a0c3d0cf66146dc07388549d2fbdb267bb9f59ee
+2026/05/21 09:13:36 DEBUG: Provided MAC: invalid
+[GIN] 2026/05/21 - 09:13:36 | 401 | 310.208µs |             ::1 | POST     "/webhook"
+2026/05/21 09:16:56 Starting periodic analysis
+2026/05/21 09:21:56 Starting periodic analysis
+2026/05/21 09:26:56 Starting periodic analysis
