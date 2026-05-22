@@ -521,17 +521,43 @@ func base64Decode(s string) ([]byte, error) {
 
 // postPRCommentGitHub posts a comment on a PR with the list of issues.
 func postPRCommentGitHub(owner, repo string, prNumber int, filename string, issues []Issue) error {
-	// Create a comment body
+	// Create a comment body with improved styling
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("### Code Analysis for `%s`\n\n", filename))
-	buf.WriteString("Found the following issues:\n\n")
+	buf.WriteString(fmt.Sprintf("## 🔍 Code Analysis Report for `%s`\n\n", filename))
+	buf.WriteString("The Coding Smell Agent has analyzed this file and found the following issues:\n\n")
+	
+	// Group issues by type for better organization
+	issueGroups := map[string][]Issue{}
 	for _, issue := range issues {
-		buf.WriteString(fmt.Sprintf("- **%s** (line %d): %s\n", issue.Type, issue.Line, issue.Description))
-		if issue.Suggestion != "" {
-			buf.WriteString(fmt.Sprintf("  - Suggestion: %s\n", issue.Suggestion))
+		issueGroups[issue.Type] = append(issueGroups[issue.Type], issue)
+	}
+	
+	// Define icons for each issue type
+	typeIcons := map[string]string{
+		"vulnerability": "🛡️",
+		"code_smell":    "🧼",
+		"complexity":    "📊",
+		"note":          "ℹ️",
+	}
+	
+	// Write each issue group
+	for issueType, issueList := range issueGroups {
+		icon := typeIcons[issueType]
+		typeTitle := strings.ToUpper(string(issueType[0])) + issueType[1:]
+		buf.WriteString(fmt.Sprintf("### %s %s Issues (%d)\n\n", icon, typeTitle, len(issueList)))
+		
+		for _, issue := range issueList {
+			buf.WriteString(fmt.Sprintf("- **%s** (line %d): %s\n", issue.Type, issue.Line, issue.Description))
+			if issue.Suggestion != "" {
+				buf.WriteString(fmt.Sprintf("  - 💡 **Suggestion**: %s\n", issue.Suggestion))
+			}
+			buf.WriteString("\n")
 		}
 	}
-	buf.WriteString("\n---\n*Analysis performed by Coding Smell Agent*")
+	
+	buf.WriteString("---\n")
+	buf.WriteString("*🤖 Analysis performed by Coding Smell Agent*  \n")
+	buf.WriteString("_This is an automated analysis. Please review the suggestions and apply them as appropriate._")
 
 	comment := map[string]string{
 		"body": buf.String(),
@@ -719,4 +745,4 @@ Code:
 	}
 
 	return analysis, nil
-}
+}// Test change at Thu May 21 13:05:55 PDT 2026
